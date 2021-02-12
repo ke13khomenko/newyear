@@ -1,0 +1,407 @@
+= Отчет по лабораторной работе New Year Tree
+
+== Задание
+
+Построить и реализовать архитектуру программы, которая поочередно
+включает и выключает светодиоды, изменяя период моргания по нажатию кнопки на 50 мс.
+
+== Выполнение работы:
+
+Первым делом была разработана архитектура программы.
+Для этого мы воспользовались программой StarUML. Были созданы блоки,
+которые описывают
+классы и методы, используемые в программе, а также связи и взаимодействия между ними.
+Полученная архитектура представленна на рисунке ниже:
+
+image::https://github.com/musenzovakhomenko/NewYear/blob/main/image%20(3).png[]
+
+Далее в соответствии с разработанной архитектурой был описан каждый класс и методы
+входящие в него.Все классы описываются в файлах с расширением .hpp , а реализация
+методов прописывается в файле .cpp. Каждый класс выполняет свою определенную
+задачу и содержит некоторое количество реализуемых в нем методов.
+
+Код каждого из классов представлен ниже:
+
+
+_pin.hpp_
+
+[, cpp]
+
+----
+#pragma once
+#include "port.hpp"
+
+class IPinToggle
+{
+  public:
+  virtual void Toggle() = 0;
+};
+
+class IPinGet
+{
+  public:
+  virtual bool IsSet() =0;
+};
+
+
+class Pin : public IPinToggle, public IPinGet
+{
+  public:
+  Pin(std::uint8_t num, IPort& aPort): number(num), port(aPort)
+  {
+  }
+   void Toggle () override
+    {
+      port.Toggle(number);
+    }
+
+   bool IsSet() override
+    {
+      return ((port.Get()& (1<< number)) != 0U);
+    }
+
+    private:
+    std::uint8_t number;
+    IPort& port;
+};
+
+
+----
+
+
+_pinsconfig.hpp_
+
+[, cpp]
+
+----
+#pragma once
+#include "gpiocregisters.hpp"
+#include "gpioaregisters.hpp"
+#include "port.hpp"
+#include "pin.hpp"
+
+
+inline Port<GPIOC> PortC;
+inline Port<GPIOA> PortA;
+
+
+inline Pin Led1Pin(5,PortC);
+inline Pin Led2Pin(8,PortC);
+inline Pin Led3Pin(9,PortC);
+inline Pin Led4Pin(5,PortA);
+
+
+----
+
+
+_port.hpp_
+
+[, cpp]
+
+----
+#include <cstdint>
+#include <cassert>
+#pragma once
+
+class IPort
+{
+  public:
+  virtual void Toggle(std::uint8_t num) = 0;
+  virtual std::uint32_t Get()=0;
+};
+
+template <typename Reg>
+class Port: public IPort
+{
+  public:
+  void Toggle(std::uint8_t num) override
+   {
+     assert (num < 16);
+     Reg::ODR::Toggle(1 <<num);
+   }
+
+  std::uint32_t Get() override
+   {
+     return Reg::IDR::Get();
+   }
+};
+
+
+----
+
+_led.hpp_
+
+[, cpp]
+
+----
+#pragma once
+#include "pin.hpp"
+
+
+class Led
+{
+  public:
+  Led(IPinToggle& aPin): pin(aPin)
+   {
+   }
+  void Toggle()
+   {
+     pin.Toggle();
+   }
+
+  private:
+  IPinToggle& pin;
+};
+
+
+----
+
+
+_garlands.hpp_
+
+[, cpp]
+
+----
+#pragma once
+#include "pinsconfig.hpp"
+#include "button.hpp"
+#include "led.hpp"
+#include <array>
+#include "timer.hpp"
+
+class Garlands
+ {
+   public:
+   Garlands( Button& aButton): button(aButton), leds {
+                                                      Led(Led1Pin),
+                                                      Led(Led2Pin),
+                                                      Led(Led3Pin),
+                                                      Led(Led4Pin)
+                                                       }
+    {
+    }
+
+    Timer timer;
+    void Update()
+     {
+        timer.Start();
+        for(;;)
+           {
+              if(button.IsPressed())
+           {
+        timer.ChangePeriod(1000U);
+     }
+   }
+}
+
+
+void HandleInterrupt()
+  {
+   leds [i++ & 0x3].Toggle();
+   }
+
+private:
+Button& button;
+std::array<Led, 4> leds;
+int i=0;
+};
+
+extern Garlands garlands;
+
+
+----
+
+
+_interrupthandler.hpp_
+
+[, cpp]
+
+----
+#ifndef REGISTERS_INTERRUPTHANDLER_HPP
+#define REGISTERS_INTERRUPTHANDLER_HPP
+
+
+#include "tim2registers.hpp" //for TIM2
+#include "gpiocregisters.hpp" //for TIM2
+#include "garlands.hpp" //for TIM2
+
+class InterruptHandler {
+ public:
+   static void DummyHandler() { for(;;) {} }
+   static void Timer2Handler()
+ {
+    if (TIM2::SR::UIF::UpdatePending::IsSet())
+     {
+       TIM2::SR::UIF::NoUpdate::Set();
+       garlands.HandleInterrupt();
+     }
+ }
+};
+#endif
+
+
+----
+
+
+_button.hpp_
+
+[, cpp]
+
+----
+#pragma once
+#include "pin.hpp"
+
+class Button
+{
+  public:
+  Button( IPinGet& aPin): pin(aPin)
+   {
+   }
+  bool IsPressed()
+   {
+     return (!pin.IsSet());
+   }
+  private:
+  IPinGet& pin;
+};
+
+
+----
+
+
+_timer.hpp_
+
+[, cpp]
+
+----
+
+#pragma once
+#include <cstdint>
+#include "led.hpp"
+#include "tim2registers.hpp"
+#include "nvicregisters.hpp"
+
+
+
+class Timer
+{
+  public :
+  void ChangePeriod(std::uint32_t deltaPeriod)
+   {
+     deltaPeriod = deltaPeriod - 50U;
+     if (deltaPeriod == 50U)
+      {
+        deltaPeriod = 1000U;
+      }
+     TIM2::ARR::Write(deltaPeriod);
+   }
+
+
+void Start()
+  {
+    TIM2::CR1::CEN::Enable::Set();
+  }
+};
+
+----
+
+
+_NewYearTree.hpp_
+
+[, cpp]
+
+----
+#pragma once
+#include "garlands.hpp"
+
+class NewYearTree
+{
+   public:
+   void Update()
+   {
+    garlands.Update();
+   }
+};
+----
+
+
+Реализация созданных методов представлена в файле  main.cpp.
+
+_main.cpp_
+
+[, cpp]
+
+----
+#include "rccregisters.hpp"
+#include "gpiocregisters.hpp"
+#include "gpioaregisters.hpp"
+#include <iostream>
+#include "port.hpp"
+#include <bitset>
+#include "pin.hpp"
+#include "led.hpp"
+#include "button.hpp"
+#include "garlands.hpp"
+#include "tim2registers.hpp"
+#include "nvicregisters.hpp"
+#include "timer.hpp"
+#include "NewYearTree.hpp"
+
+
+extern "C"
+{
+  int __low_level_init(void)
+   {
+     RCC::CR::HSEON::On::Set();
+     while(!RCC::CR::HSERDY::Ready::IsSet())
+      {
+      }
+
+     RCC::CFGR::SW::Hse::Set();
+
+     while(!RCC::CFGR::SWS::Hse::IsSet())
+      {
+      }
+
+     RCC::CR::HSION::Off::Set();
+
+     RCC::AHB1ENR::GPIOCEN::Enable::Set();
+     RCC::AHB1ENR::GPIOAEN::Enable::Set();
+     RCC::APB1ENR::TIM2EN::Enable::Set();
+     GPIOC::MODER::MODER5::Output::Set();
+     GPIOA::MODER::MODER5::Output::Set();
+     GPIOC::MODER::MODER8::Output::Set();
+     GPIOC::MODER::MODER9::Output::Set();
+     GPIOC::MODER::MODER13::Input::Set();
+
+     TIM2::CR1::URS::OverflowEvent::Set();
+     NVIC::ISER0::Write(1 << 28);
+     TIM2::PSC::Write(7999U);
+     TIM2::ARR::Write(1000);
+     TIM2::SR::UIF::NoUpdate::Set();
+     TIM2::CNT::Write(0U);
+     TIM2::DIER::UIE::Enable::Set();
+     return 1;
+   }
+}
+
+Pin buttonPin(13,PortC);
+
+Button button(buttonPin);
+Garlands garlands(button);
+NewYearTree newyeartree;
+
+
+int main()
+  {
+    newyeartree.Update();
+    return 0;
+  }
+----
+
+== Результат работы программы
+Чтобы можно было более наглядно заметить изменения
+моргания светодиодов представим работу кода , со скоростью
+моргания от 50 мс до 150 мс.
+
+image::https://github.com/musenzovakhomenko/NewYear/blob/main/20210212_162751.gif[]
